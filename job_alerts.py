@@ -356,26 +356,23 @@ def main():
 
     matches = [j for j in all_jobs if keep(j)]
     new = [j for j in matches if j["uid"] not in seen]
+    new.sort(key=lambda j: j.get("date") or 0, reverse=True)  # newest first
     print(f"pulled {len(all_jobs)} jobs, {len(matches)} match your filter, "
           f"{len(new)} are new")
 
     for j in matches:
         seen.add(j["uid"])
 
-    if first_run:
-        save_seen(seen)
-        tg_send(f"✅ Job alerts updated. Now tracking {len(matches)} recent "
-                f"matching roles across 7 sources; you'll get a message when a "
-                f"NEW one is posted.")
-        return
-
     to_send = new[:MAX_ALERTS_PER_RUN]
+    if first_run and to_send:
+        tg_send(f"✅ Job alerts live across 7 sources. Catching you up on the "
+                f"{len(to_send)} most recent matches:")
     for j in to_send:
         tg_send(format_job(j))
         time.sleep(0.5)
     if len(new) > MAX_ALERTS_PER_RUN:
-        tg_send(f"...and {len(new) - MAX_ALERTS_PER_RUN} more new matches "
-                f"(capped this run).")
+        tg_send(f"...and {len(new) - MAX_ALERTS_PER_RUN} more right now. From here "
+                f"on you'll just get new matches as they're posted.")
 
     save_seen(seen)
 
