@@ -25,7 +25,6 @@ import feedparser
 # --------------------------------------------------------------------------
 
 # A job's title must contain at least one of these (case-insensitive).
-# Grouped by the angles of your experience.
 INCLUDE_KEYWORDS = [
     # LLM / AI
     "ai engineer", "ai developer", "applied ai", "ai automation", "ai agent",
@@ -51,11 +50,18 @@ INCLUDE_KEYWORDS = [
     "business intelligence", "bi developer",
 ]
 
-# Hard excludes — if the title contains any of these, skip it.
+# Hard excludes — if the text contains any of these, skip it.
+# Includes very-senior titles and non-English language requirements.
 EXCLUDE_TITLE = [
-    "native german", "native french", "native dutch", "native spanish",
-    "security clearance", "clearance required", "principal", "staff ",
-    "vp ", "head of", "director",  # drop very senior; delete if you want them
+    "principal", "staff ", "vp ", "head of", "director",
+    "german-speaking", "german speaking", "fluent german", "native german",
+    "german required", "speak german",
+    "french-speaking", "french speaking", "fluent french", "native french",
+    "spanish-speaking", "fluent spanish", "native spanish",
+    "dutch-speaking", "fluent dutch", "native dutch",
+    "portuguese-speaking", "fluent portuguese", "japanese-speaking",
+    "mandarin required", "fluent mandarin",
+    "security clearance", "clearance required",
 ]
 
 # Only alert on jobs posted within this many days (where the source gives a date).
@@ -67,7 +73,12 @@ NON_US_FRIENDLY = ["africa", "emea", "europe", "international", "latam",
                    "apac", "nigeria", "remote - emea"]
 US_ONLY_HINTS = ["usa", "united states", "u.s.", "us only", "us-only",
                  "us remote", "remote us", "remote, us", "remote-us",
-                 "(us ", "us)", "canada only", "north america"]
+                 "(us ", "us)", "canada only", "north america",
+                 "americas only", "americas", "us-based", "u.s.-based",
+                 "based in the us", "based in the united states",
+                 "located in the us", "must reside in the us", "green card",
+                 "us citizen", "u.s. citizen", "authorized to work in the us",
+                 "work authorization in the us"]
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
@@ -107,9 +118,26 @@ def parse_epoch(v):
         return None
 
 
+def age_label(epoch):
+    """Human 'posted' label from an epoch, or '' if unknown."""
+    if not epoch:
+        return ""
+    days = (time.time() - epoch) / 86400
+    if days < 1:
+        return "today"
+    if days < 2:
+        return "yesterday"
+    return f"{int(days)}d ago"
+
+
+def text_excluded(s: str) -> bool:
+    s = (s or "").lower()
+    return any(x in s for x in EXCLUDE_TITLE)
+
+
 def title_matches(title: str) -> bool:
-    t = title.lower()
-    if any(x in t for x in EXCLUDE_TITLE):
+    t = (title or "").lower()
+    if text_excluded(t):
         return False
     return any(k in t for k in INCLUDE_KEYWORDS)
 
@@ -129,7 +157,7 @@ def location_ok(loc: str) -> bool:
 def recent_enough(job: dict) -> bool:
     d = job.get("date")
     if d is None:
-        return True  # no date from source; dedupe still ensures it's newly seen
+        return True
     return (time.time() - d) <= MAX_AGE_DAYS * 86400
 
 
@@ -283,14 +311,15 @@ def from_hackernews():
             low = clean.lower()
             if "remote" not in low:          # only remote postings
                 continue
-            title = clean[:200]
+            if text_excluded(low):           # language / clearance requirements
+                continue
             if "worldwide" in low or "anywhere" in low:
                 loc = "worldwide"
             elif any(u in low for u in US_ONLY_HINTS):
-                loc = "usa"
+                loc = "usa"                  # Americas-only / US-only -> excluded
             else:
                 loc = "remote"
-            out.append(norm("hackernews", c.get("id"), title, "", loc,
+            out.append(norm("hackernews", c.get("id"), clean[:200], "", loc,
                             f"https://news.ycombinator.com/item?id={c.get('id')}",
                             c.get("created_at_i")))
     except Exception as e:
@@ -325,9 +354,11 @@ def format_job(j: dict) -> str:
     esc = lambda s: html.escape(s or "")
     loc = esc(j["location"]) or "Remote (location not stated)"
     company = esc(j["company"])
+    posted = age_label(j.get("date"))
+    meta = esc(j["source"]) + (f"  ·  posted {posted}" if posted else "")
     head = f"<b>{esc(j['title'])}</b>\n"
     mid = (f"{company}  ·  {loc}\n" if company else f"{loc}\n")
-    return head + mid + f"<i>{esc(j['source'])}</i>\n{esc(j['url'])}"
+    return head + mid + f"<i>{meta}</i>\n{esc(j['url'])}"
 
 
 # --------------------------------------------------------------------------
