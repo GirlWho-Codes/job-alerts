@@ -2,8 +2,8 @@
 Job alerts scraper.
 
 Pulls remote jobs from several sources, keeps only the ones that match your
-skills AND are open to candidates outside the US, de-duplicates against jobs
-already seen, and pushes new matches to Telegram.
+skills, are open to candidates outside the US, AND were posted recently,
+de-duplicates against jobs already seen, and pushes new matches to Telegram.
 
 Config is at the top. Secrets (TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID) come from
 environment variables, never from this file.
@@ -14,7 +14,9 @@ import re
 import json
 import time
 import html
+import calendar
 import pathlib
+from datetime import datetime
 import requests
 import feedparser
 
@@ -28,12 +30,13 @@ INCLUDE_KEYWORDS = [
     # LLM / AI
     "ai engineer", "ai developer", "applied ai", "ai automation", "ai agent",
     "genai", "gen ai", "llm", "prompt engineer", "machine learning", "ml engineer",
-    # Automation / integration
+    # Automation / integration / browser automation / scraping
     "automation", "integration engineer", "workflow automation",
     "no-code", "no code", "nocode", "zapier", "n8n", "make.com", "rpa",
     "automation specialist", "solutions engineer", "forward deployed",
     "forward-deployed", "implementation engineer", "sales engineer",
     "support engineer", "developer experience", "developer advocate",
+    "web scraping", "scraping", "selenium", "playwright", "apify", "crawler",
     # GTM / RevOps
     "growth engineer", "revops", "revenue operations", "marketing automation",
     # Frontend / full-stack
@@ -55,6 +58,9 @@ EXCLUDE_TITLE = [
     "vp ", "head of", "director",  # drop very senior; delete if you want them
 ]
 
+# Only alert on jobs posted within this many days (where the source gives a date).
+MAX_AGE_DAYS = 5
+
 # Location handling. A job is kept only if location_ok() returns True.
 WORLDWIDE_HINTS = ["worldwide", "anywhere", "global", "fully remote"]
 NON_US_FRIENDLY = ["africa", "emea", "europe", "international", "latam",
@@ -72,8 +78,34 @@ HTTP_TIMEOUT = 25
 UA = {"User-Agent": "job-alerts-bot/1.0 (+https://github.com/girlwho-codes/job-alerts)"}
 
 # --------------------------------------------------------------------------
-# Filtering
+# Helpers
 # --------------------------------------------------------------------------
+
+def parse_epoch(v):
+    """Best-effort convert many date formats to epoch seconds, or None."""
+    if v is None:
+        return None
+    if isinstance(v, (int, float)):
+        v = float(v)
+        return v / 1000.0 if v > 1e12 else v
+    s = str(v).strip()
+    if not s:
+        return None
+    try:
+        f = float(s)
+        return f / 1000.0 if f > 1e12 else f
+    except ValueError:
+        pass
+    for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+        try:
+            return calendar.timegm(time.strptime(s[:19], fmt))
+        except ValueError:
+            pass
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()
+    except Exception:
+        return None
+
 
 def title_matches(title: str) -> bool:
     t = title.lower()
@@ -91,12 +123,19 @@ def location_ok(loc: str) -> bool:
         return False
     if any(h in l for h in NON_US_FRIENDLY):
         return True
-    # bare "Remote", empty, or unknown -> keep it, location is shown in the alert
-    return True
+    return True  # bare "Remote" / unknown -> keep, location is shown in the alert
+
+
+def recent_enough(job: dict) -> bool:
+    d = job.get("date")
+    if d is None:
+        return True  # no date from source; dedupe still ensures it's newly seen
+    return (time.time() - d) <= MAX_AGE_DAYS * 86400
 
 
 def keep(job: dict) -> bool:
-    return title_matches(job["title"]) and location_ok(job["location"])
+    return (title_matches(job["title"]) and location_ok(job["location"])
+            and recent_enough(job))
 
 
 # --------------------------------------------------------------------------
@@ -104,7 +143,7 @@ def keep(job: dict) -> bool:
 # failing source never breaks the run.
 # --------------------------------------------------------------------------
 
-def norm(source, uid, title, company, location, url):
+def norm(source, uid, title, company, location, url, date=None):
     return {
         "source": source,
         "uid": f"{source}:{uid}",
@@ -112,6 +151,7 @@ def norm(source, uid, title, company, location, url):
         "company": (company or "").strip(),
         "location": (location or "").strip(),
         "url": (url or "").strip(),
+        "date": parse_epoch(date),
     }
 
 
@@ -123,7 +163,8 @@ def from_remotive():
         for j in r.json().get("jobs", []):
             out.append(norm("remotive", j.get("id"), j.get("title"),
                             j.get("company_name"),
-                            j.get("candidate_required_location"), j.get("url")))
+                            j.get("candidate_required_location"), j.get("url"),
+                            j.get("publication_date")))
     except Exception as e:
         print("remotive failed:", e)
     return out
@@ -133,12 +174,12 @@ def from_remoteok():
     out = []
     try:
         r = requests.get("https://remoteok.com/api", headers=UA, timeout=HTTP_TIMEOUT)
-        data = r.json()
-        for j in data:
+        for j in r.json():
             if not isinstance(j, dict) or "id" not in j:
                 continue  # first element is a legal notice
             out.append(norm("remoteok", j.get("id"), j.get("position"),
-                            j.get("company"), j.get("location"), j.get("url")))
+                            j.get("company"), j.get("location"), j.get("url"),
+                            j.get("epoch") or j.get("date")))
     except Exception as e:
         print("remoteok failed:", e)
     return out
@@ -155,7 +196,8 @@ def from_himalayas():
                 loc = ", ".join(str(x) for x in loc)
             url = j.get("applicationLink") or j.get("guid") or j.get("url")
             out.append(norm("himalayas", j.get("guid") or j.get("title"),
-                            j.get("title"), j.get("companyName"), loc, url))
+                            j.get("title"), j.get("companyName"), loc, url,
+                            j.get("pubDate")))
     except Exception as e:
         print("himalayas failed:", e)
     return out
@@ -182,8 +224,10 @@ def from_wwr():
                 if ":" in title:          # WWR titles are "Company: Role"
                     company, role = title.split(":", 1)
                 loc = e.get("region", "") or ""
+                ep = (calendar.timegm(e.published_parsed)
+                      if e.get("published_parsed") else None)
                 out.append(norm("wwr", e.get("id") or e.get("link"),
-                                role, company, loc, e.get("link")))
+                                role, company, loc, e.get("link"), ep))
         except Exception as ex:
             print("wwr feed failed:", feed, ex)
     return out
@@ -196,7 +240,8 @@ def from_jobicy():
                          headers=UA, timeout=HTTP_TIMEOUT)
         for j in r.json().get("jobs", []):
             out.append(norm("jobicy", j.get("id"), j.get("jobTitle"),
-                            j.get("companyName"), j.get("jobGeo"), j.get("url")))
+                            j.get("companyName"), j.get("jobGeo"), j.get("url"),
+                            j.get("pubDate")))
     except Exception as e:
         print("jobicy failed:", e)
     return out
@@ -210,7 +255,7 @@ def from_workingnomads():
         for j in r.json():
             out.append(norm("workingnomads", j.get("url") or j.get("slug"),
                             j.get("title"), j.get("company_name"),
-                            j.get("location"), j.get("url")))
+                            j.get("location"), j.get("url"), j.get("pub_date")))
     except Exception as e:
         print("workingnomads failed:", e)
     return out
@@ -246,7 +291,8 @@ def from_hackernews():
             else:
                 loc = "remote"
             out.append(norm("hackernews", c.get("id"), title, "", loc,
-                            f"https://news.ycombinator.com/item?id={c.get('id')}"))
+                            f"https://news.ycombinator.com/item?id={c.get('id')}",
+                            c.get("created_at_i")))
     except Exception as e:
         print("hackernews failed:", e)
     return out
@@ -317,10 +363,10 @@ def main():
         seen.add(j["uid"])
 
     if first_run:
-        # Don't flood you with the entire backlog on the very first run.
         save_seen(seen)
-        tg_send(f"✅ Job alerts updated. Now tracking {len(matches)} matching "
-                f"roles across 7 sources; you'll get a message when a NEW one is posted.")
+        tg_send(f"✅ Job alerts updated. Now tracking {len(matches)} recent "
+                f"matching roles across 7 sources; you'll get a message when a "
+                f"NEW one is posted.")
         return
 
     to_send = new[:MAX_ALERTS_PER_RUN]
