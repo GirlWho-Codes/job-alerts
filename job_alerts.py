@@ -10,6 +10,7 @@ environment variables, never from this file.
 """
 
 import os
+import re
 import json
 import time
 import html
@@ -188,7 +189,71 @@ def from_wwr():
     return out
 
 
-SOURCES = [from_remotive, from_remoteok, from_himalayas, from_wwr]
+def from_jobicy():
+    out = []
+    try:
+        r = requests.get("https://jobicy.com/api/v2/remote-jobs?count=100",
+                         headers=UA, timeout=HTTP_TIMEOUT)
+        for j in r.json().get("jobs", []):
+            out.append(norm("jobicy", j.get("id"), j.get("jobTitle"),
+                            j.get("companyName"), j.get("jobGeo"), j.get("url")))
+    except Exception as e:
+        print("jobicy failed:", e)
+    return out
+
+
+def from_workingnomads():
+    out = []
+    try:
+        r = requests.get("https://www.workingnomads.com/api/exposed_jobs/",
+                         headers=UA, timeout=HTTP_TIMEOUT)
+        for j in r.json():
+            out.append(norm("workingnomads", j.get("url") or j.get("slug"),
+                            j.get("title"), j.get("company_name"),
+                            j.get("location"), j.get("url")))
+    except Exception as e:
+        print("workingnomads failed:", e)
+    return out
+
+
+def from_hackernews():
+    """Latest 'Ask HN: Who is hiring?' thread; each top-level comment ~= a posting."""
+    out = []
+    try:
+        s = requests.get("https://hn.algolia.com/api/v1/search_by_date",
+                         params={"query": "Ask HN: Who is hiring?",
+                                 "tags": "story", "hitsPerPage": 1},
+                         headers=UA, timeout=HTTP_TIMEOUT).json()
+        hits = s.get("hits", [])
+        if not hits:
+            return out
+        story_id = hits[0]["objectID"]
+        item = requests.get(f"https://hn.algolia.com/api/v1/items/{story_id}",
+                            headers=UA, timeout=HTTP_TIMEOUT).json()
+        for c in (item.get("children") or [])[:300]:
+            txt = c.get("text") or ""
+            if not txt:
+                continue
+            clean = html.unescape(re.sub("<[^>]+>", " ", txt)).strip()
+            low = clean.lower()
+            if "remote" not in low:          # only remote postings
+                continue
+            title = clean[:200]
+            if "worldwide" in low or "anywhere" in low:
+                loc = "worldwide"
+            elif any(u in low for u in US_ONLY_HINTS):
+                loc = "usa"
+            else:
+                loc = "remote"
+            out.append(norm("hackernews", c.get("id"), title, "", loc,
+                            f"https://news.ycombinator.com/item?id={c.get('id')}"))
+    except Exception as e:
+        print("hackernews failed:", e)
+    return out
+
+
+SOURCES = [from_remotive, from_remoteok, from_himalayas, from_wwr,
+           from_jobicy, from_workingnomads, from_hackernews]
 
 
 # --------------------------------------------------------------------------
@@ -203,7 +268,7 @@ def tg_send(text: str):
         requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
             json={"chat_id": TELEGRAM_CHAT_ID, "text": text,
-                  "parse_mode": "HTML", "disable_web_page_preview": False},
+                  "parse_mode": "HTML", "disable_web_page_preview": True},
             timeout=HTTP_TIMEOUT,
         )
     except Exception as e:
@@ -213,9 +278,10 @@ def tg_send(text: str):
 def format_job(j: dict) -> str:
     esc = lambda s: html.escape(s or "")
     loc = esc(j["location"]) or "Remote (location not stated)"
-    return (f"<b>{esc(j['title'])}</b>\n"
-            f"{esc(j['company'])}  ·  {loc}\n"
-            f"<i>{esc(j['source'])}</i>\n{esc(j['url'])}")
+    company = esc(j["company"])
+    head = f"<b>{esc(j['title'])}</b>\n"
+    mid = (f"{company}  ·  {loc}\n" if company else f"{loc}\n")
+    return head + mid + f"<i>{esc(j['source'])}</i>\n{esc(j['url'])}"
 
 
 # --------------------------------------------------------------------------
@@ -253,8 +319,8 @@ def main():
     if first_run:
         # Don't flood you with the entire backlog on the very first run.
         save_seen(seen)
-        tg_send(f"✅ Job alerts are live. Tracking {len(matches)} matching "
-                f"roles now; you'll get a message when a NEW one is posted.")
+        tg_send(f"✅ Job alerts updated. Now tracking {len(matches)} matching "
+                f"roles across 7 sources; you'll get a message when a NEW one is posted.")
         return
 
     to_send = new[:MAX_ALERTS_PER_RUN]
