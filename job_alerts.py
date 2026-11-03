@@ -2,7 +2,7 @@
 Job alerts scraper.
 
 Pulls remote jobs from several sources, keeps only the ones that match your
-skills, are open to candidates outside the US, AND were posted recently,
+skills, are clearly open to candidates outside the US, AND were posted recently,
 de-duplicates against jobs already seen, and pushes new matches to Telegram.
 
 Config is at the top. Secrets (TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID) come from
@@ -51,7 +51,7 @@ INCLUDE_KEYWORDS = [
 ]
 
 # Hard excludes — if the text contains any of these, skip it.
-# Includes very-senior titles and non-English language requirements.
+# Very-senior titles and non-English language requirements.
 EXCLUDE_TITLE = [
     "principal", "staff ", "vp ", "head of", "director",
     "german-speaking", "german speaking", "fluent german", "native german",
@@ -67,10 +67,13 @@ EXCLUDE_TITLE = [
 # Only alert on jobs posted within this many days (where the source gives a date).
 MAX_AGE_DAYS = 5
 
-# Location handling. A job is kept only if location_ok() returns True.
-WORLDWIDE_HINTS = ["worldwide", "anywhere", "global", "fully remote"]
+# Location handling (STRICT): keep a job only if the location clearly shows it
+# is open to non-US candidates. Anything that only says "Remote" or is unknown
+# is dropped, because those are most often US-restricted in the fine print.
+WORLDWIDE_HINTS = ["worldwide", "anywhere", "global", "anywhere in the world",
+                   "\U0001F30D", "\U0001F30E", "\U0001F30F"]
 NON_US_FRIENDLY = ["africa", "emea", "europe", "international", "latam",
-                   "apac", "nigeria", "remote - emea"]
+                   "apac", "nigeria", "asia", "remote - emea"]
 US_ONLY_HINTS = ["usa", "united states", "u.s.", "us only", "us-only",
                  "us remote", "remote us", "remote, us", "remote-us",
                  "(us ", "us)", "canada only", "north america",
@@ -143,15 +146,15 @@ def title_matches(title: str) -> bool:
 
 
 def location_ok(loc: str) -> bool:
-    """True if a candidate outside the US could plausibly apply."""
+    """STRICT: keep only if clearly open to non-US candidates."""
     l = (loc or "").lower()
-    if any(h in l for h in WORLDWIDE_HINTS):
-        return True
     if any(u in l for u in US_ONLY_HINTS):
         return False
+    if any(h in l for h in WORLDWIDE_HINTS):
+        return True
     if any(h in l for h in NON_US_FRIENDLY):
         return True
-    return True  # bare "Remote" / unknown -> keep, location is shown in the alert
+    return False  # bare 'Remote' / unknown -> drop (usually US-restricted)
 
 
 def recent_enough(job: dict) -> bool:
@@ -313,12 +316,14 @@ def from_hackernews():
                 continue
             if text_excluded(low):           # language / clearance requirements
                 continue
-            if "worldwide" in low or "anywhere" in low:
+            if any(u in low for u in US_ONLY_HINTS):
+                continue                     # US / Americas-only -> drop
+            if "worldwide" in low or "anywhere" in low or "global" in low:
                 loc = "worldwide"
-            elif any(u in low for u in US_ONLY_HINTS):
-                loc = "usa"                  # Americas-only / US-only -> excluded
+            elif any(h in low for h in NON_US_FRIENDLY):
+                loc = "europe"               # some non-US region named
             else:
-                loc = "remote"
+                continue                     # no clear non-US signal -> drop
             out.append(norm("hackernews", c.get("id"), clean[:200], "", loc,
                             f"https://news.ycombinator.com/item?id={c.get('id')}",
                             c.get("created_at_i")))
@@ -352,7 +357,7 @@ def tg_send(text: str):
 
 def format_job(j: dict) -> str:
     esc = lambda s: html.escape(s or "")
-    loc = esc(j["location"]) or "Remote (location not stated)"
+    loc = esc(j["location"]) or "Remote"
     company = esc(j["company"])
     posted = age_label(j.get("date"))
     meta = esc(j["source"]) + (f"  ·  posted {posted}" if posted else "")
