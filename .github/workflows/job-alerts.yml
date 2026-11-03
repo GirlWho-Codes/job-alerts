@@ -2,7 +2,7 @@ name: job-alerts
 
 on:
   schedule:
-    - cron: "*/30 * * * *"   # every 30 minutes (UTC); GitHub may delay a few min
+    - cron: "*/15 * * * *"   # every 15 minutes (UTC); GitHub may delay a few min
   workflow_dispatch: {}       # lets you run it on demand from the Actions tab
 
 permissions:

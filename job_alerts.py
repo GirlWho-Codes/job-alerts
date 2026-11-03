@@ -22,19 +22,29 @@ import feedparser
 # --------------------------------------------------------------------------
 
 # A job's title must contain at least one of these (case-insensitive).
+# Grouped by the angles of your experience.
 INCLUDE_KEYWORDS = [
+    # LLM / AI
     "ai engineer", "ai developer", "applied ai", "ai automation", "ai agent",
-    "genai", "gen ai", "llm", "prompt engineer",
+    "genai", "gen ai", "llm", "prompt engineer", "machine learning", "ml engineer",
+    # Automation / integration
     "automation", "integration engineer", "workflow automation",
     "no-code", "no code", "nocode", "zapier", "n8n", "make.com", "rpa",
-    "solutions engineer", "forward deployed", "forward-deployed",
-    "implementation engineer", "sales engineer", "support engineer",
-    "developer experience", "developer advocate",
+    "automation specialist", "solutions engineer", "forward deployed",
+    "forward-deployed", "implementation engineer", "sales engineer",
+    "support engineer", "developer experience", "developer advocate",
+    # GTM / RevOps
     "growth engineer", "revops", "revenue operations", "marketing automation",
-    "full stack", "full-stack", "fullstack",
-    "front end", "front-end", "frontend", "react", "vue",
-    "shopify", "web developer", "software engineer", "software developer",
-    "data engineer", "analytics engineer", "automation specialist",
+    # Frontend / full-stack
+    "full stack", "full-stack", "fullstack", "front end", "front-end", "frontend",
+    "react", "vue", "next.js", "javascript", "typescript",
+    "web developer", "software engineer", "software developer",
+    "founding engineer", "product engineer",
+    # E-commerce / Shopify
+    "shopify", "ecommerce", "e-commerce", "liquid",
+    # Data / analytics
+    "data engineer", "analytics engineer", "data analyst", "data analytics",
+    "business intelligence", "bi developer",
 ]
 
 # Hard excludes — if the title contains any of these, skip it.
@@ -155,6 +165,7 @@ WWR_FEEDS = [
     "https://weworkremotely.com/categories/remote-full-stack-programming-jobs.rss",
     "https://weworkremotely.com/categories/remote-devops-sysadmin-jobs.rss",
     "https://weworkremotely.com/categories/remote-sales-and-marketing-jobs.rss",
+    "https://weworkremotely.com/categories/remote-data-jobs.rss",
 ]
 
 
