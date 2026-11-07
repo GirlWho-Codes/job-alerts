@@ -100,7 +100,12 @@ EXCLUDE_TITLE_WORDS = [
     # model training / research (not your lane yet)
     "machine learning engineer", "ml engineer", "mlops", "research scientist",
     "research engineer", "applied scientist", "computer vision", "deep learning",
-    "phd", "data scientist",
+    "phd", "data scientist", "inference", "vllm", "tensorrt", "cuda",
+    # gigs that only look like engineering roles
+    "interviewer", "annotator", "rater",
+    # region named in the title (role is locked to that place)
+    "latam", "latin america", "usa", "u.s.", "canada", "brazil", "mexico",
+    "uk", "germany", "spain", "italy", "france", "poland", "india", "apac",
     # look-alike non-dev roles
     "account executive", "account manager", "sales manager", "sales representative",
     "sdr", "bdr", "recruiter", "talent", "copywriter", "content writer",
