@@ -3,7 +3,12 @@ name: job-alerts
 on:
   schedule:
     - cron: "*/15 * * * *"   # every 15 minutes (UTC); GitHub may delay a few min
-  workflow_dispatch: {}       # lets you run it on demand from the Actions tab
+  workflow_dispatch:          # lets you run it on demand from the Actions tab
+    inputs:
+      report:
+        description: "Report only: list what would be sent and why the rest was dropped (no Telegram, no seen.json update)"
+        type: boolean
+        default: false
 
 permissions:
   contents: write             # needed to commit seen.json back
@@ -29,9 +34,11 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          REPORT: ${{ inputs.report && '1' || '' }}
         run: python job_alerts.py
 
       - name: Save seen jobs
+        if: ${{ !inputs.report }}
         run: |
           git config user.name "job-alerts-bot"
           git config user.email "github-actions@users.noreply.github.com"

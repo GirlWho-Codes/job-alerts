@@ -2,8 +2,17 @@
 Job alerts scraper.
 
 Pulls remote jobs from several sources, keeps only the ones that match your
-skills, are clearly open to candidates outside the US, AND were posted recently,
+skills, are open to someone based in Nigeria, AND were posted recently,
 de-duplicates against jobs already seen, and pushes new matches to Telegram.
+
+Every job goes through four checks, in this order:
+  1. title   - matches one of your skill angles, and isn't a stack/role you don't do
+  2. location - says worldwide / Africa / EMEA (not "Europe", "LATAM", "anywhere in the US")
+  3. description - no US work-auth wall, no "must live in X", no foreign-language requirement
+  4. recency - posted within MAX_AGE_DAYS
+
+Run `python job_alerts.py --report` to print every match plus why everything
+else was rejected, without sending anything or touching seen.json.
 
 Config is at the top. Secrets (TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID) come from
 environment variables, never from this file.
@@ -11,11 +20,13 @@ environment variables, never from this file.
 
 import os
 import re
+import sys
 import json
 import time
 import html
 import calendar
 import pathlib
+from collections import Counter
 from datetime import datetime
 import requests
 import feedparser
@@ -24,64 +35,143 @@ import feedparser
 # CONFIG — edit these to tune what you get alerted about
 # --------------------------------------------------------------------------
 
-# A job's title must contain at least one of these (case-insensitive).
+# A job's title must contain at least one of these as a whole word/phrase
+# (case-insensitive). "react" won't match "Reactor", "liquid" won't match "Liquidity".
 INCLUDE_KEYWORDS = [
-    # LLM / AI
+    # LLM / AI (building with models, not training them)
     "ai engineer", "ai developer", "applied ai", "ai automation", "ai agent",
-    "genai", "gen ai", "llm", "prompt engineer", "machine learning", "ml engineer",
+    "ai agents", "agentic", "ai solutions", "ai integration", "ai implementation",
+    "genai", "gen ai", "generative ai", "llm", "prompt engineer",
     # Automation / integration / browser automation / scraping
-    "automation", "integration engineer", "workflow automation",
-    "no-code", "no code", "nocode", "zapier", "n8n", "make.com", "rpa",
-    "automation specialist", "solutions engineer", "forward deployed",
-    "forward-deployed", "implementation engineer", "sales engineer",
-    "support engineer", "developer experience", "developer advocate",
-    "web scraping", "scraping", "selenium", "playwright", "apify", "crawler",
+    "automation engineer", "automation developer", "automation specialist",
+    "automation consultant", "automation lead", "automation architect",
+    "workflow automation", "business automation", "process automation",
+    "ai automation", "marketing automation", "sales automation",
+    "integration engineer", "integrations engineer", "integration developer",
+    "no-code", "no code", "nocode", "low-code", "low code",
+    "zapier", "n8n", "make.com", "rpa", "uipath", "power automate",
+    "solutions engineer", "solution engineer", "solutions architect",
+    "forward deployed", "forward-deployed", "implementation engineer",
+    "implementation specialist", "technical consultant", "sales engineer",
+    "support engineer", "developer advocate", "developer experience",
+    "web scraping", "scraping", "scraper", "selenium", "playwright", "apify",
+    "crawler", "crawling",
     # GTM / RevOps
-    "growth engineer", "revops", "revenue operations", "marketing automation",
-    # Frontend / full-stack
+    "growth engineer", "gtm engineer", "go-to-market engineer", "revops",
+    "revenue operations", "hubspot",
+    # Frontend / full-stack (JS world)
     "full stack", "full-stack", "fullstack", "front end", "front-end", "frontend",
-    "react", "vue", "next.js", "javascript", "typescript",
+    "react", "vue", "next.js", "nextjs", "javascript", "typescript", "node.js",
     "web developer", "software engineer", "software developer",
-    "founding engineer", "product engineer",
+    "founding engineer", "product engineer", "internal tools", "retool",
     # E-commerce / Shopify
-    "shopify", "ecommerce", "e-commerce", "liquid",
+    "shopify", "liquid", "ecommerce developer", "e-commerce developer",
+    "ecommerce engineer", "e-commerce engineer",
     # Data / analytics
     "data engineer", "analytics engineer", "data analyst", "data analytics",
-    "business intelligence", "bi developer",
+    "business intelligence", "bi developer", "bi analyst", "reporting analyst",
+    "bigquery", "tableau", "looker",
 ]
 
-# Hard excludes — if the text contains any of these, skip it.
-# Very-senior titles and non-English language requirements.
-EXCLUDE_TITLE = [
-    "principal", "staff ", "vp ", "head of", "director",
-    "german-speaking", "german speaking", "fluent german", "native german",
-    "german required", "speak german",
-    "french-speaking", "french speaking", "fluent french", "native french",
-    "spanish-speaking", "fluent spanish", "native spanish",
-    "dutch-speaking", "fluent dutch", "native dutch",
-    "portuguese-speaking", "fluent portuguese", "japanese-speaking",
-    "mandarin required", "fluent mandarin",
-    "security clearance", "clearance required",
+# Title kills: seniority you're not targeting, stacks you don't work in,
+# and roles that only look similar.
+EXCLUDE_TITLE_WORDS = [
+    # seniority / management
+    "principal", "staff", "vp", "vice president", "head of", "director",
+    "engineering manager", "cto", "chief", "intern", "internship", "junior",
+    "entry level", "entry-level", "graduate",
+    # stacks you don't do
+    "java", "golang", "go developer", "go engineer", "rust", "c++", "c#",
+    ".net", "dotnet", "ios", "android", "kotlin", "swift", "flutter",
+    "react native", "scala", "elixir", "ruby", "rails", "php", "laravel",
+    "magento", "salesforce", "sap", "servicenow", "dynamics 365", "workday",
+    "netsuite", "embedded", "firmware", "hardware", "fpga", "mainframe",
+    "cobol", "unity", "unreal", "game", "blockchain", "web3", "solidity",
+    "smart contract", "crypto",
+    # infra / security / QA
+    "devops", "sre", "site reliability", "platform engineer", "infrastructure",
+    "cloud engineer", "kubernetes", "network engineer", "security engineer",
+    "security", "cybersecurity", "penetration", "soc analyst",
+    "qa", "quality assurance", "test automation", "automation test",
+    "automation tester", "sdet", "test engineer", "tester",
+    # industrial "automation"
+    "plc", "scada", "industrial", "electrical", "mechanical", "controls engineer",
+    "building automation", "process engineer", "manufacturing",
+    # model training / research (not your lane yet)
+    "machine learning engineer", "ml engineer", "mlops", "research scientist",
+    "research engineer", "applied scientist", "computer vision", "deep learning",
+    "phd", "data scientist",
+    # look-alike non-dev roles
+    "account executive", "account manager", "sales manager", "sales representative",
+    "sdr", "bdr", "recruiter", "talent", "copywriter", "content writer",
+    "customer success manager", "teacher", "tutor", "trainer",
+    # language requirement in the title
+    "german", "french", "spanish", "dutch", "portuguese", "italian", "polish",
+    "japanese", "mandarin", "korean", "swedish", "danish", "norwegian",
+    "finnish", "czech", "turkish", "arabic", "hebrew", "russian",
+    "bilingual",
+    # clearance
+    "clearance", "ts/sci",
 ]
 
 # Only alert on jobs posted within this many days (where the source gives a date).
 MAX_AGE_DAYS = 5
 
-# Location handling (STRICT): keep a job only if the location clearly shows it
-# is open to non-US candidates. Anything that only says "Remote" or is unknown
-# is dropped, because those are most often US-restricted in the fine print.
-WORLDWIDE_HINTS = ["worldwide", "anywhere", "global", "anywhere in the world",
-                   "\U0001F30D", "\U0001F30E", "\U0001F30F"]
-NON_US_FRIENDLY = ["africa", "emea", "europe", "international", "latam",
-                   "apac", "nigeria", "asia", "remote - emea"]
-US_ONLY_HINTS = ["usa", "united states", "u.s.", "us only", "us-only",
-                 "us remote", "remote us", "remote, us", "remote-us",
-                 "(us ", "us)", "canada only", "north america",
-                 "americas only", "americas", "us-based", "u.s.-based",
-                 "based in the us", "based in the united states",
-                 "located in the us", "must reside in the us", "green card",
-                 "us citizen", "u.s. citizen", "authorized to work in the us",
-                 "work authorization in the us"]
+# ---- Location (STRICT, Nigeria-eligible) ---------------------------------
+# Location must clearly include you. "Europe", "LATAM", "APAC", "Americas",
+# single countries, bare "Remote" and blanks are dropped, because those roles
+# need local work rights in that region.
+OPEN_LOCATION = ["worldwide", "anywhere", "global", "globally", "international",
+                 "remote - global", "work from anywhere",
+                 "\U0001F30D", "\U0001F30E", "\U0001F30F"]
+INCLUDES_NIGERIA = ["africa", "emea", "nigeria", "west africa", "sub-saharan",
+                    "utc+1", "utc +1", "gmt+1", "wat"]
+# Even if a location says "anywhere", these words mean it's really one region.
+REGION_QUALIFIERS = [
+    "us", "usa", "u.s.", "united states", "america", "americas", "north america",
+    "canada", "latam", "latin america", "south america", "mexico", "brazil",
+    "europe", "eu", "uk", "united kingdom", "germany", "france", "spain",
+    "poland", "netherlands", "portugal", "italy", "ireland", "bulgaria",
+    "romania", "apac", "asia", "india", "philippines",
+    "australia", "new zealand", "pakistan",
+]
+# You work any hours, so a region named only as a time-zone overlap is fine:
+# "Worldwide (overlap with US hours)" passes, "Anywhere in the US" doesn't.
+TIMEZONE_WORDS = ["time zone", "timezone", "time-zone", "hours", "overlap"]
+
+# ---- Description walls ----------------------------------------------------
+# Phrases in the job text that mean you can't take it from Nigeria.
+WORK_AUTH_WALLS = [
+    r"\bauthori[sz]ed to work in the (us|u\.s\.|united states|uk|eu|european union|eea|canada)",
+    r"\b(us|u\.s\.) (citizen|citizenship|person|work authori[sz]ation)",
+    r"\bgreen card",
+    r"(unable|not able|cannot|can't|do not|don't|will not|won't) (to )?(provide |offer )?(visa )?sponsor",
+    r"\bno (visa )?sponsorship",
+    r"\bright to work in the (uk|u\.k\.|us|eu|united kingdom)",
+    r"\b(eu|eea|european) (work permit|citizen|citizenship|passport)",
+    r"\b(must|need to|required to|should) (be )?(currently )?(located|based|living|reside|residing|live)"
+    r" (in|within) (the )?(us|u\.s\.|usa|united states|canada|north america|americas|"
+    r"europe|eu|uk|united kingdom|latam|latin america|germany|spain|poland|portugal|"
+    r"india|philippines|australia)\b",
+    r"\b(open|available) (only )?to (candidates|applicants|residents) (located |based )?(in|from) "
+    r"(the )?(us|usa|united states|canada|latam|latin america|europe|eu|uk)\b",
+    r"\b(us|u\.s\.|usa|united states|canada|latam|europe|eu|uk)[- ]based (candidates|applicants|only)",
+    r"\b(usa|u\.s\.|canada|latam|europe|eu|uk)[- ]only\b",
+    r"\bus[- ]only (role|position|candidates|applicants|residents)",
+    r"\bw-?2\b",
+    r"security clearance",
+]
+LANGUAGES = (r"german|french|spanish|dutch|portuguese|italian|polish|japanese|"
+             r"mandarin|chinese|korean|swedish|danish|norwegian|finnish|czech|"
+             r"turkish|arabic|hebrew|russian|ukrainian|romanian|hungarian|greek")
+LANGUAGE_WALLS = [
+    rf"\b(fluen\w*|native|proficien\w*|business[- ]level|professional[- ]level|working)"
+    rf"([- ]speaker)?([- ]level)?( command)?( knowledge)?( skills)?( in| of)? ({LANGUAGES})",
+    rf"({LANGUAGES})[- ](speaking|speaker|native|fluency|fluent)",
+    rf"({LANGUAGES}) (and|&) english",
+    rf"english (and|&) ({LANGUAGES})",
+    rf"({LANGUAGES})\s*\(?(c1|c2|b2)",
+]
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
@@ -94,6 +184,27 @@ UA = {"User-Agent": "job-alerts-bot/1.0 (+https://github.com/girlwho-codes/job-a
 # --------------------------------------------------------------------------
 # Helpers
 # --------------------------------------------------------------------------
+
+def phrase_re(words):
+    """One regex that matches any of the phrases as whole words."""
+    parts = sorted((re.escape(w.lower()) for w in words), key=len, reverse=True)
+    return re.compile(r"(?<![a-z0-9])(" + "|".join(parts) + r")(?![a-z0-9])")
+
+
+INCLUDE_RE = phrase_re(INCLUDE_KEYWORDS)
+EXCLUDE_TITLE_RE = phrase_re(EXCLUDE_TITLE_WORDS)
+OPEN_LOC_RE = phrase_re([w for w in OPEN_LOCATION if w.isascii()])
+OPEN_LOC_EMOJI = [w for w in OPEN_LOCATION if not w.isascii()]
+NIGERIA_RE = phrase_re(INCLUDES_NIGERIA)
+REGION_RE = phrase_re(REGION_QUALIFIERS)
+WALL_RES = [re.compile(p) for p in WORK_AUTH_WALLS]
+LANG_RES = [re.compile(p) for p in LANGUAGE_WALLS]
+
+
+def clean_text(s):
+    s = html.unescape(re.sub(r"<[^>]+>", " ", s or ""))
+    return re.sub(r"\s+", " ", s).strip().lower()
+
 
 def parse_epoch(v):
     """Best-effort convert many date formats to epoch seconds, or None."""
@@ -133,40 +244,62 @@ def age_label(epoch):
     return f"{int(days)}d ago"
 
 
-def text_excluded(s: str) -> bool:
-    s = (s or "").lower()
-    return any(x in s for x in EXCLUDE_TITLE)
+# --------------------------------------------------------------------------
+# The four checks. Each returns None if the job passes, or a short reason.
+# --------------------------------------------------------------------------
 
-
-def title_matches(title: str) -> bool:
+def check_title(title):
     t = (title or "").lower()
-    if text_excluded(t):
-        return False
-    return any(k in t for k in INCLUDE_KEYWORDS)
+    if not INCLUDE_RE.search(t):
+        return "title: not your skills"
+    m = EXCLUDE_TITLE_RE.search(t)
+    if m:
+        return f"title: excluded '{m.group(1)}'"
+    return None
 
 
-def location_ok(loc: str) -> bool:
-    """STRICT: keep only if clearly open to non-US candidates."""
+def check_location(loc):
     l = (loc or "").lower()
-    if any(u in l for u in US_ONLY_HINTS):
-        return False
-    if any(h in l for h in WORLDWIDE_HINTS):
-        return True
-    if any(h in l for h in NON_US_FRIENDLY):
-        return True
-    return False  # bare 'Remote' / unknown -> drop (usually US-restricted)
+    if not l.strip():
+        return "location: blank"
+    if NIGERIA_RE.search(l):
+        return None                                   # Africa / EMEA / Nigeria named
+    is_open = OPEN_LOC_RE.search(l) or any(e in l for e in OPEN_LOC_EMOJI)
+    if not is_open:
+        return f"location: '{loc[:40]}'"
+    m = REGION_RE.search(l)
+    if m and not any(w in l for w in TIMEZONE_WORDS):                                             # "Anywhere in the US", "Worldwide (EU timezones)"
+        return f"location: open but limited to '{m.group(1)}'"
+    return None
 
 
-def recent_enough(job: dict) -> bool:
+def check_description(desc):
+    d = desc or ""
+    for r in WALL_RES:
+        m = r.search(d)
+        if m:
+            return f"description: '{m.group(0)[:50]}'"
+    for r in LANG_RES:
+        m = r.search(d)
+        if m:
+            return f"language: '{m.group(0)[:40]}'"
+    return None
+
+
+def check_recency(job):
     d = job.get("date")
     if d is None:
-        return True
-    return (time.time() - d) <= MAX_AGE_DAYS * 86400
+        return None
+    if (time.time() - d) > MAX_AGE_DAYS * 86400:
+        return "too old"
+    return None
 
 
-def keep(job: dict) -> bool:
-    return (title_matches(job["title"]) and location_ok(job["location"])
-            and recent_enough(job))
+def reject_reason(job):
+    return (check_title(job["title"])
+            or check_location(job["location"])
+            or check_description(job["desc"])
+            or check_recency(job))
 
 
 # --------------------------------------------------------------------------
@@ -174,7 +307,7 @@ def keep(job: dict) -> bool:
 # failing source never breaks the run.
 # --------------------------------------------------------------------------
 
-def norm(source, uid, title, company, location, url, date=None):
+def norm(source, uid, title, company, location, url, date=None, desc=""):
     return {
         "source": source,
         "uid": f"{source}:{uid}",
@@ -183,6 +316,7 @@ def norm(source, uid, title, company, location, url, date=None):
         "location": (location or "").strip(),
         "url": (url or "").strip(),
         "date": parse_epoch(date),
+        "desc": clean_text(desc),
     }
 
 
@@ -195,7 +329,7 @@ def from_remotive():
             out.append(norm("remotive", j.get("id"), j.get("title"),
                             j.get("company_name"),
                             j.get("candidate_required_location"), j.get("url"),
-                            j.get("publication_date")))
+                            j.get("publication_date"), j.get("description")))
     except Exception as e:
         print("remotive failed:", e)
     return out
@@ -210,7 +344,7 @@ def from_remoteok():
                 continue  # first element is a legal notice
             out.append(norm("remoteok", j.get("id"), j.get("position"),
                             j.get("company"), j.get("location"), j.get("url"),
-                            j.get("epoch") or j.get("date")))
+                            j.get("epoch") or j.get("date"), j.get("description")))
     except Exception as e:
         print("remoteok failed:", e)
     return out
@@ -228,7 +362,8 @@ def from_himalayas():
             url = j.get("applicationLink") or j.get("guid") or j.get("url")
             out.append(norm("himalayas", j.get("guid") or j.get("title"),
                             j.get("title"), j.get("companyName"), loc, url,
-                            j.get("pubDate")))
+                            j.get("pubDate"),
+                            j.get("description") or j.get("excerpt")))
     except Exception as e:
         print("himalayas failed:", e)
     return out
@@ -258,7 +393,8 @@ def from_wwr():
                 ep = (calendar.timegm(e.published_parsed)
                       if e.get("published_parsed") else None)
                 out.append(norm("wwr", e.get("id") or e.get("link"),
-                                role, company, loc, e.get("link"), ep))
+                                role, company, loc, e.get("link"), ep,
+                                e.get("summary", "")))
         except Exception as ex:
             print("wwr feed failed:", feed, ex)
     return out
@@ -272,7 +408,8 @@ def from_jobicy():
         for j in r.json().get("jobs", []):
             out.append(norm("jobicy", j.get("id"), j.get("jobTitle"),
                             j.get("companyName"), j.get("jobGeo"), j.get("url"),
-                            j.get("pubDate")))
+                            j.get("pubDate"),
+                            j.get("jobDescription") or j.get("jobExcerpt")))
     except Exception as e:
         print("jobicy failed:", e)
     return out
@@ -286,14 +423,20 @@ def from_workingnomads():
         for j in r.json():
             out.append(norm("workingnomads", j.get("url") or j.get("slug"),
                             j.get("title"), j.get("company_name"),
-                            j.get("location"), j.get("url"), j.get("pub_date")))
+                            j.get("location"), j.get("url"), j.get("pub_date"),
+                            j.get("description")))
     except Exception as e:
         print("workingnomads failed:", e)
     return out
 
 
 def from_hackernews():
-    """Latest 'Ask HN: Who is hiring?' thread; each top-level comment ~= a posting."""
+    """Latest 'Ask HN: Who is hiring?' thread; each top-level comment ~= a posting.
+
+    HN posts have no location field, so the first line ("Company | Role | Location
+    | Remote") is used as both title and location, and the whole post is the
+    description that gets checked for walls.
+    """
     out = []
     try:
         s = requests.get("https://hn.algolia.com/api/v1/search_by_date",
@@ -306,27 +449,17 @@ def from_hackernews():
         story_id = hits[0]["objectID"]
         item = requests.get(f"https://hn.algolia.com/api/v1/items/{story_id}",
                             headers=UA, timeout=HTTP_TIMEOUT).json()
-        for c in (item.get("children") or [])[:300]:
+        for c in (item.get("children") or [])[:400]:
             txt = c.get("text") or ""
             if not txt:
                 continue
-            clean = html.unescape(re.sub("<[^>]+>", " ", txt)).strip()
-            low = clean.lower()
-            if "remote" not in low:          # only remote postings
-                continue
-            if text_excluded(low):           # language / clearance requirements
-                continue
-            if any(u in low for u in US_ONLY_HINTS):
-                continue                     # US / Americas-only -> drop
-            if "worldwide" in low or "anywhere" in low or "global" in low:
-                loc = "worldwide"
-            elif any(h in low for h in NON_US_FRIENDLY):
-                loc = "europe"               # some non-US region named
-            else:
-                continue                     # no clear non-US signal -> drop
-            out.append(norm("hackernews", c.get("id"), clean[:200], "", loc,
+            first = html.unescape(re.sub(r"<[^>]+>", " ",
+                                         re.split(r"<p>", txt, 1)[0])).strip()
+            if "remote" not in first.lower():
+                continue                     # header line must say remote
+            out.append(norm("hackernews", c.get("id"), first[:200], "", first,
                             f"https://news.ycombinator.com/item?id={c.get('id')}",
-                            c.get("created_at_i")))
+                            c.get("created_at_i"), txt))
     except Exception as e:
         print("hackernews failed:", e)
     return out
@@ -357,7 +490,7 @@ def tg_send(text: str):
 
 def format_job(j: dict) -> str:
     esc = lambda s: html.escape(s or "")
-    loc = esc(j["location"]) or "Remote"
+    loc = esc(j["location"][:60]) or "Remote"
     company = esc(j["company"])
     posted = age_label(j.get("date"))
     meta = esc(j["source"]) + (f"  ·  posted {posted}" if posted else "")
@@ -381,20 +514,58 @@ def save_seen(seen):
     SEEN_FILE.write_text(json.dumps(sorted(seen), indent=0))
 
 
+def fetch_all():
+    all_jobs = []
+    for src in SOURCES:
+        got = src()
+        print(f"{src.__name__[5:]}: {len(got)} jobs")
+        all_jobs.extend(got)
+        time.sleep(1)
+    return all_jobs
+
+
+def report(all_jobs):
+    """Print what passes and why the rest fail. Sends nothing, saves nothing."""
+    reasons = Counter()
+    near_misses = []          # matched your skills but failed a later check
+    matches = []
+    for j in all_jobs:
+        why = reject_reason(j)
+        if why is None:
+            matches.append(j)
+            continue
+        reasons[why.split(":")[0] if ":" in why else why] += 1
+        if not why.startswith("title:"):
+            near_misses.append((j, why))
+    print(f"\n=== {len(matches)} MATCHES ===")
+    for j in sorted(matches, key=lambda j: j.get("date") or 0, reverse=True):
+        print(f"[{j['source']}] {j['title'][:80]} | {j['company']} | "
+              f"{j['location'][:40]} | {age_label(j.get('date'))}")
+    print("\n=== REJECTED, BY CHECK ===")
+    for k, v in reasons.most_common():
+        print(f"{v:5d}  {k}")
+    print(f"\n=== SKILL MATCHES THAT WERE BLOCKED ({len(near_misses)}) ===")
+    for j, why in near_misses[:80]:
+        print(f"[{j['source']}] {j['title'][:60]} | {j['location'][:30]} -> {why}")
+
+
 def main():
+    all_jobs = fetch_all()
+
+    if "--report" in sys.argv or os.environ.get("REPORT") == "1":
+        report(all_jobs)
+        return
+
     first_run = not SEEN_FILE.exists() or not load_seen()
     seen = load_seen()
 
-    all_jobs = []
-    for src in SOURCES:
-        all_jobs.extend(src())
-        time.sleep(1)
-
-    matches = [j for j in all_jobs if keep(j)]
+    matches = [j for j in all_jobs if reject_reason(j) is None]
     new = [j for j in matches if j["uid"] not in seen]
     new.sort(key=lambda j: j.get("date") or 0, reverse=True)  # newest first
     print(f"pulled {len(all_jobs)} jobs, {len(matches)} match your filter, "
           f"{len(new)} are new")
+    for j in new:
+        print(f"  NEW [{j['source']}] {j['title'][:80]} | {j['location'][:40]}")
 
     for j in matches:
         seen.add(j["uid"])
