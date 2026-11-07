@@ -53,8 +53,11 @@ INCLUDE_KEYWORDS = [
     "zapier", "n8n", "make.com", "rpa", "uipath", "power automate",
     "solutions engineer", "solution engineer", "solutions architect",
     "forward deployed", "forward-deployed", "implementation engineer",
-    "implementation specialist", "technical consultant", "sales engineer",
-    "support engineer", "developer advocate", "developer experience",
+    "implementation specialist", "technical consultant",
+    "support engineer", "technical support", "customer success engineer",
+    "developer advocate", "developer experience", "developer relations", "devrel",
+    "developer educator", "technical writer", "documentation engineer",
+    "technical content", "rag",
     "web scraping", "scraping", "scraper", "selenium", "playwright", "apify",
     "crawler", "crawling",
     # GTM / RevOps
@@ -108,6 +111,7 @@ EXCLUDE_TITLE_WORDS = [
     "latam", "latin america", "usa", "u.s.", "canada", "brazil", "mexico",
     "uk", "germany", "spain", "italy", "france", "poland", "india", "apac",
     # look-alike non-dev roles
+    "pre-sales", "presales", "sales engineer",
     "account executive", "account manager", "sales manager", "sales representative",
     "sdr", "bdr", "recruiter", "talent", "copywriter", "content writer",
     "customer success manager", "teacher", "tutor", "trainer",
@@ -167,6 +171,8 @@ WORK_AUTH_WALLS = [
     r"\b(usa|u\.s\.|canada|latam|europe|eu|uk)[- ]only\b",
     r"\bus[- ]only (role|position|candidates|applicants|residents)",
     r"\bw-?2\b",
+    # pre-sales / quota-carrying roles (OTE pay = sales comp)
+    r"\bote\b", r"on[- ]target earnings", r"\b(sales|revenue) quota", r"carry(ing)? a quota",
     r"security clearance",
 ]
 LANGUAGES = (r"german|french|spanish|dutch|portuguese|italian|polish|japanese|"
