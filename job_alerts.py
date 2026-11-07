@@ -111,6 +111,7 @@ EXCLUDE_TITLE_WORDS = [
     "account executive", "account manager", "sales manager", "sales representative",
     "sdr", "bdr", "recruiter", "talent", "copywriter", "content writer",
     "customer success manager", "teacher", "tutor", "trainer",
+    "designer", "ux", "ui/ux",
     # language requirement in the title
     "german", "french", "spanish", "dutch", "portuguese", "italian", "polish",
     "japanese", "mandarin", "korean", "swedish", "danish", "norwegian",
@@ -709,9 +710,21 @@ def report(all_jobs):
     print("\n=== REJECTED, BY CHECK ===")
     for k, v in reasons.most_common():
         print(f"{v:5d}  {k}")
-    print(f"\n=== SKILL MATCHES THAT WERE BLOCKED ({len(near_misses)}) ===")
-    for j, why in near_misses[:80]:
-        print(f"[{j['source']}] {j['title'][:60]} | {j['location'][:30]} -> {why}")
+    print("\n=== WHY SKILL MATCHES WERE BLOCKED, PER SOURCE ===")
+    per = {}
+    for j, why in near_misses:
+        per.setdefault(j["source"], Counter())[re.sub(r"'.*", "", why).strip()] += 1
+    for src, c in per.items():
+        print(f"{src:14} " + ", ".join(f"{k} {v}" for k, v in c.most_common()))
+    print(f"\n=== SKILL MATCHES THAT WERE BLOCKED ({len(near_misses)}), "
+          f"UP TO 25 PER SOURCE ===")
+    shown = Counter()
+    for j, why in near_misses:
+        if shown[j["source"]] >= 25:
+            continue
+        shown[j["source"]] += 1
+        print(f"[{j['source']}] {j['title'][:55]} | {j['company'][:18]} | "
+              f"{j['location'][:30]} -> {why}")
 
 
 def main():
