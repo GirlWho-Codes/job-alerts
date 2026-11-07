@@ -42,6 +42,6 @@ jobs:
         run: |
           git config user.name "job-alerts-bot"
           git config user.email "github-actions@users.noreply.github.com"
-          git add seen.json
+          git add seen.json boards_read.json
           git commit -m "update seen jobs [skip ci]" || echo "nothing to commit"
           git push || echo "nothing to push"

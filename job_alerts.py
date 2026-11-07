@@ -27,6 +27,7 @@ import html
 import calendar
 import pathlib
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 import requests
 import feedparser
@@ -130,6 +131,7 @@ OPEN_LOCATION = ["worldwide", "anywhere", "global", "globally", "international",
                  "remote - global", "work from anywhere",
                  "\U0001F30D", "\U0001F30E", "\U0001F30F"]
 INCLUDES_NIGERIA = ["africa", "emea", "nigeria", "west africa", "sub-saharan",
+                    "lagos", "abuja", "port harcourt", "ibadan",
                     "utc+1", "utc +1", "gmt+1", "wat"]
 # Even if a location says "anywhere", these words mean it's really one region.
 REGION_QUALIFIERS = [
@@ -178,6 +180,27 @@ LANGUAGE_WALLS = [
     rf"({LANGUAGES})\s*\(?(c1|c2|b2)",
 ]
 
+# ---- "Open anywhere" said in the job text ---------------------------------
+# Company job boards often just say "Remote". A bare "Remote" only passes when
+# the job text says, in hiring words, that you can work from anywhere.
+# "Customers worldwide" doesn't count; "we hire globally" does.
+BODY_ANYWHERE = (
+    r"(hire|hires|hiring|recruit\w*|work from|working from|work remotely from|"
+    r"remote from|candidates|applicants|location|based|team members)"
+    r"[^.;]{0,25}?\b(anywhere|worldwide|globally|any country|any time ?zone)\b"
+    r"(?!\s+(in|within|across)\s+(?!the world))"
+)
+
+# ---- Company job boards (Greenhouse, Lever, Ashby) ------------------------
+# The list lives in companies.txt. Each run reads the boards read longest ago,
+# so every board gets covered even when GitHub skips scheduled runs.
+COMPANIES_FILE = pathlib.Path(__file__).parent / "companies.txt"
+BOARDS_STATE_FILE = pathlib.Path(__file__).parent / "boards_read.json"
+BOARDS_PER_RUN = 150
+BOARD_WORKERS = 8
+BOARD_TIMEOUT = 15
+HOME_COUNTRY_CODES = {"NG"}       # a board's own country code must be one of these
+
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
@@ -204,10 +227,13 @@ NIGERIA_RE = phrase_re(INCLUDES_NIGERIA)
 REGION_RE = phrase_re(REGION_QUALIFIERS)
 WALL_RES = [re.compile(p) for p in WORK_AUTH_WALLS]
 LANG_RES = [re.compile(p) for p in LANGUAGE_WALLS]
+BODY_ANYWHERE_RE = re.compile(BODY_ANYWHERE)
+BARE_REMOTE_RE = re.compile(r"^[\s,|/()-]*(fully |100% )?remote[\s,|/()-]*$")
 
 
 def clean_text(s):
-    s = html.unescape(re.sub(r"<[^>]+>", " ", s or ""))
+    s = html.unescape(s or "")                    # Greenhouse escapes its HTML
+    s = html.unescape(re.sub(r"<[^>]+>", " ", s))
     return re.sub(r"\s+", " ", s).strip().lower()
 
 
@@ -263,10 +289,16 @@ def check_title(title):
     return None
 
 
-def check_location(loc):
+def check_location(loc, desc="", country=""):
+    if country:
+        if country.upper() in HOME_COUNTRY_CODES:
+            return None                               # board itself says Nigeria
+        return f"location: board says country {country.upper()}"
     l = (loc or "").lower()
-    if not l.strip():
-        return "location: blank"
+    if not l.strip() or BARE_REMOTE_RE.match(l):
+        if BODY_ANYWHERE_RE.search(desc or ""):
+            return None                               # "Remote" + "we hire globally"
+        return "location: blank" if not l.strip() else "location: 'Remote' only"
     if NIGERIA_RE.search(l):
         return None                                   # Africa / EMEA / Nigeria named
     is_open = OPEN_LOC_RE.search(l) or any(e in l for e in OPEN_LOC_EMOJI)
@@ -302,7 +334,7 @@ def check_recency(job):
 
 def reject_reason(job):
     return (check_title(job["title"])
-            or check_location(job["location"])
+            or check_location(job["location"], job["desc"], job.get("country"))
             or check_description(job["desc"])
             or check_recency(job))
 
@@ -312,8 +344,10 @@ def reject_reason(job):
 # failing source never breaks the run.
 # --------------------------------------------------------------------------
 
-def norm(source, uid, title, company, location, url, date=None, desc=""):
+def norm(source, uid, title, company, location, url, date=None, desc="",
+         country=""):
     return {
+        "country": (country or "").strip(),
         "source": source,
         "uid": f"{source}:{uid}",
         "title": (title or "").strip(),
@@ -470,8 +504,134 @@ def from_hackernews():
     return out
 
 
+def _get_json(url):
+    r = requests.get(url, headers=UA, timeout=BOARD_TIMEOUT)
+    if r.status_code != 200:
+        raise RuntimeError(f"HTTP {r.status_code}")
+    return r.json()
+
+
+def _company_name(slug):
+    return re.sub(r"[-_.]+", " ", slug).strip().title()
+
+
+def _remote_loc(loc, remote):
+    """Put 'Remote' in front when the board flags it remote but the text doesn't."""
+    loc = (loc or "").strip()
+    if remote and "remote" not in loc.lower():
+        return f"Remote - {loc}" if loc else "Remote"
+    return loc
+
+
+def board_ashby(slug):
+    d = _get_json(f"https://api.ashbyhq.com/posting-api/job-board/{slug}")
+    out = []
+    for j in d.get("jobs", []):
+        if j.get("isListed") is False:
+            continue
+        locs = [j.get("location", "")] + [
+            s.get("location", "") for s in (j.get("secondaryLocations") or [])]
+        loc = " / ".join(x for x in locs if x)
+        remote = j.get("isRemote") or j.get("workplaceType") == "Remote"
+        country = (((j.get("address") or {}).get("postalAddress") or {})
+                   .get("addressCountry") or "")
+        out.append(norm("ashby", j.get("id") or j.get("jobUrl"), j.get("title"),
+                        _company_name(slug), _remote_loc(loc, remote),
+                        j.get("jobUrl"), j.get("publishedAt"),
+                        j.get("descriptionHtml") or j.get("descriptionPlain"),
+                        country if len(country) == 2 else ""))
+    return out
+
+
+def board_greenhouse(slug):
+    d = _get_json(f"https://boards-api.greenhouse.io/v1/boards/{slug}/jobs?content=true")
+    out = []
+    for j in d.get("jobs", []):
+        out.append(norm("greenhouse", j.get("id"), j.get("title"),
+                        j.get("company_name") or _company_name(slug),
+                        (j.get("location") or {}).get("name", ""),
+                        j.get("absolute_url"),
+                        j.get("first_published") or j.get("updated_at"),
+                        j.get("content")))
+    return out
+
+
+def board_lever(slug):
+    d = _get_json(f"https://api.lever.co/v0/postings/{slug}?mode=json")
+    out = []
+    for j in d if isinstance(d, list) else []:
+        cats = j.get("categories") or {}
+        loc = " / ".join(cats.get("allLocations") or [cats.get("location") or ""])
+        lists = " ".join(f"{x.get('text', '')} {x.get('content', '')}"
+                         for x in (j.get("lists") or []))
+        desc = " ".join([j.get("descriptionPlain") or "", lists,
+                         j.get("additionalPlain") or ""])
+        out.append(norm("lever", j.get("id"), j.get("text"), _company_name(slug),
+                        _remote_loc(loc, j.get("workplaceType") == "remote"),
+                        j.get("hostedUrl"), j.get("createdAt"), desc,
+                        j.get("country") or ""))
+    return out
+
+
+BOARD_READERS = {"ashby": board_ashby, "greenhouse": board_greenhouse,
+                 "lever": board_lever}
+BOARDS_READ = {}          # "source:slug" -> epoch last answered; saved by main()
+BOARD_STATS = {}
+
+
+def load_boards_state():
+    try:
+        return json.loads(BOARDS_STATE_FILE.read_text())
+    except Exception:
+        return {}
+
+
+def boards_due(entries, state, n):
+    """The n boards read longest ago. Never-read boards come first."""
+    return sorted(entries, key=lambda e: state.get(e, 0))[:n]
+
+
+def from_company_boards():
+    out, failed = [], []
+    try:
+        entries = [l.strip() for l in COMPANIES_FILE.read_text().splitlines()
+                   if l.strip() and not l.strip().startswith("#")]
+    except Exception as e:
+        print("companies.txt unreadable:", e)
+        return out
+    BOARDS_READ.update(load_boards_state())
+    due = boards_due(entries, BOARDS_READ, BOARDS_PER_RUN)
+
+    def read(entry):
+        src, _, slug = entry.partition(":")
+        reader = BOARD_READERS.get(src.strip().lower())
+        if not reader or not slug.strip():
+            return entry, None, "not a board this can read"
+        try:
+            return entry, reader(slug.strip()), None
+        except Exception as e:
+            return entry, None, str(e)[:60]
+
+    with ThreadPoolExecutor(max_workers=BOARD_WORKERS) as pool:
+        for entry, jobs, err in pool.map(read, due):
+            if jobs is None:
+                failed.append(f"{entry} ({err})")
+                continue
+            BOARDS_READ[entry] = int(time.time())
+            out.extend(jobs)
+    BOARD_STATS.update(total=len(entries), asked=len(due),
+                       answered=len(due) - len(failed), failed=failed)
+    print(f"  company boards: {len(due) - len(failed)} of {len(due)} answered "
+          f"({len(entries)} tracked)")
+    if failed:
+        print("  boards that did not answer: " + ", ".join(failed[:15])
+              + (" ..." if len(failed) > 15 else ""))
+    return out
+
+
 SOURCES = [from_remotive, from_remoteok, from_himalayas, from_wwr,
-           from_jobicy, from_workingnomads, from_hackernews]
+           from_jobicy, from_workingnomads, from_hackernews,
+           from_company_boards]
 
 
 # --------------------------------------------------------------------------
@@ -572,21 +732,21 @@ def main():
     for j in new:
         print(f"  NEW [{j['source']}] {j['title'][:80]} | {j['location'][:40]}")
 
-    for j in matches:
-        seen.add(j["uid"])
-
     to_send = new[:MAX_ALERTS_PER_RUN]
     if first_run and to_send:
-        tg_send(f"✅ Job alerts live across 7 sources. Catching you up on the "
+        tg_send(f"✅ Job alerts live. Catching you up on the "
                 f"{len(to_send)} most recent matches:")
     for j in to_send:
         tg_send(format_job(j))
+        seen.add(j["uid"])               # only what was actually sent
         time.sleep(0.5)
     if len(new) > MAX_ALERTS_PER_RUN:
-        tg_send(f"...and {len(new) - MAX_ALERTS_PER_RUN} more right now. From here "
-                f"on you'll just get new matches as they're posted.")
+        tg_send(f"...{len(new) - MAX_ALERTS_PER_RUN} more matches. "
+                f"They'll come in the next run.")
 
     save_seen(seen)
+    if BOARDS_READ:
+        BOARDS_STATE_FILE.write_text(json.dumps(BOARDS_READ, indent=0, sort_keys=True))
 
 
 if __name__ == "__main__":
