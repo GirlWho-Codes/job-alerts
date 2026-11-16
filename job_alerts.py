@@ -736,6 +736,15 @@ def report(all_jobs):
         if not why.startswith("title:"):
             near_misses.append((j, why))
     maybes = [j for j in all_jobs if is_maybe(j)]
+    why_not = Counter()
+    for j in all_jobs:
+        if check_title(j["title"]) is None and check_location(
+                j["location"], j["desc"], j.get("country")) in MAYBE_REASONS and not is_maybe(j):
+            r = check_description(j["desc"]) or check_recency(j) or "?"
+            why_not[(j["source"], re.sub(r"'.*", "", r).strip())] += 1
+    print("\n=== REMOTE-ONLY SKILL MATCHES NOT IN DIGEST, WHY ===")
+    for (src, r), c in why_not.most_common(20):
+        print(f"{c:4d}  {src:12} {r}")
     print(f"\n=== {len(maybes)} WORTH-A-GLANCE (remote, no country named) ===")
     for j in sorted(maybes, key=lambda j: j.get("date") or 0, reverse=True)[:30]:
         print(f"[{j['source']}] {j['title'][:70]} | {j['company'][:20]} | {age_label(j.get('date'))}")
