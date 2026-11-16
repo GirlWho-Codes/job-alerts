@@ -126,7 +126,7 @@ EXCLUDE_TITLE_WORDS = [
 ]
 
 # Only alert on jobs posted within this many days (where the source gives a date).
-MAX_AGE_DAYS = 5
+MAX_AGE_DAYS = 10
 
 # ---- Location (STRICT, Nigeria-eligible) ---------------------------------
 # Location must clearly include you. "Europe", "LATAM", "APAC", "Americas",
@@ -339,6 +339,20 @@ def check_recency(job):
     return None
 
 
+MAYBE_REASONS = ("location: 'Remote' only", "location: blank")
+DIGEST_HOUR_UTC = 7           # one "worth a glance" digest a day, first run after this hour
+DIGEST_MAX = 15
+
+
+def is_maybe(job):
+    """Fits your skills, recent, no walls in the text, but only says 'Remote'
+    with no country. Often open to you; worth one look, not an instant alert."""
+    return (check_title(job["title"]) is None
+            and check_location(job["location"], job["desc"], job.get("country")) in MAYBE_REASONS
+            and check_description(job["desc"]) is None
+            and check_recency(job) is None)
+
+
 def reject_reason(job):
     return (check_title(job["title"])
             or check_location(job["location"], job["desc"], job.get("country"))
@@ -399,9 +413,15 @@ def from_remoteok():
 def from_himalayas():
     out = []
     try:
-        r = requests.get("https://himalayas.app/jobs/api?limit=200",
-                         headers=UA, timeout=HTTP_TIMEOUT)
-        for j in r.json().get("jobs", []):
+        jobs = []
+        for offset in range(0, 200, 20):                  # ~20 per page
+            r = requests.get(f"https://himalayas.app/jobs/api?limit=20&offset={offset}",
+                             headers=UA, timeout=HTTP_TIMEOUT)
+            page = r.json().get("jobs", [])
+            jobs.extend(page)
+            if len(page) < 20:
+                break
+        for j in jobs:
             loc = j.get("locationRestrictions") or j.get("locations") or []
             if isinstance(loc, list):
                 loc = ", ".join(str(x) for x in loc)
@@ -421,6 +441,11 @@ WWR_FEEDS = [
     "https://weworkremotely.com/categories/remote-devops-sysadmin-jobs.rss",
     "https://weworkremotely.com/categories/remote-sales-and-marketing-jobs.rss",
     "https://weworkremotely.com/categories/remote-data-jobs.rss",
+    "https://weworkremotely.com/categories/remote-back-end-programming-jobs.rss",
+    "https://weworkremotely.com/categories/remote-front-end-programming-jobs.rss",
+    "https://weworkremotely.com/categories/remote-customer-support-jobs.rss",
+    "https://weworkremotely.com/categories/remote-product-jobs.rss",
+    "https://weworkremotely.com/categories/all-other-remote-jobs.rss",
 ]
 
 
@@ -665,7 +690,8 @@ def format_job(j: dict) -> str:
     loc = esc(j["location"][:60]) or "Remote"
     company = esc(j["company"])
     posted = age_label(j.get("date"))
-    meta = esc(j["source"]) + (f"  ·  posted {posted}" if posted else "")
+    fresh = j.get("date") and (time.time() - j["date"]) < 6 * 3600
+    meta = ("🔥 " if fresh else "") + esc(j["source"]) + (f"  ·  posted {posted}" if posted else "")
     head = f"<b>{esc(j['title'])}</b>\n"
     mid = (f"{company}  ·  {loc}\n" if company else f"{loc}\n")
     return head + mid + f"<i>{meta}</i>\n{esc(j['url'])}"
@@ -709,6 +735,10 @@ def report(all_jobs):
         reasons[why.split(":")[0] if ":" in why else why] += 1
         if not why.startswith("title:"):
             near_misses.append((j, why))
+    maybes = [j for j in all_jobs if is_maybe(j)]
+    print(f"\n=== {len(maybes)} WORTH-A-GLANCE (remote, no country named) ===")
+    for j in sorted(maybes, key=lambda j: j.get("date") or 0, reverse=True)[:30]:
+        print(f"[{j['source']}] {j['title'][:70]} | {j['company'][:20]} | {age_label(j.get('date'))}")
     print(f"\n=== {len(matches)} MATCHES ===")
     for j in sorted(matches, key=lambda j: j.get("date") or 0, reverse=True):
         print(f"[{j['source']}] {j['title'][:80]} | {j['company']} | "
@@ -762,6 +792,22 @@ def main():
     if len(new) > MAX_ALERTS_PER_RUN:
         tg_send(f"...{len(new) - MAX_ALERTS_PER_RUN} more matches. "
                 f"They'll come in the next run.")
+
+    # Daily "worth a glance" digest of remote roles that don't name a country.
+    today = time.strftime("%Y-%m-%d", time.gmtime())
+    if (f"__digest__{today}" not in seen and time.gmtime().tm_hour >= DIGEST_HOUR_UTC):
+        maybes = [j for j in all_jobs if is_maybe(j) and ("m:" + j["uid"]) not in seen]
+        maybes.sort(key=lambda j: j.get("date") or 0, reverse=True)
+        maybes = maybes[:DIGEST_MAX]
+        print(f"digest: {len(maybes)} worth-a-glance roles")
+        if maybes:
+            tg_send(f"🟡 Worth a glance today ({len(maybes)}): remote roles that fit your "
+                    f"skills but don't say which countries. Check the post, many hire worldwide.")
+            for j in maybes:
+                tg_send(format_job(j))
+                seen.add("m:" + j["uid"])
+                time.sleep(0.5)
+        seen.add(f"__digest__{today}")
 
     save_seen(seen)
     if BOARDS_READ:
