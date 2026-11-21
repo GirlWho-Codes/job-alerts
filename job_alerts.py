@@ -233,6 +233,30 @@ OPEN_LOC_EMOJI = [w for w in OPEN_LOCATION if not w.isascii()]
 NIGERIA_RE = phrase_re(INCLUDES_NIGERIA)
 REGION_RE = phrase_re(REGION_QUALIFIERS)
 WALL_RES = [re.compile(p) for p in WORK_AUTH_WALLS]
+
+# Required skills outside your lane (native mobile, JVM/.NET/Go/Rust/Ruby stacks).
+# Only counts when the text says you need it; "a plus" / "nice to have" mentions pass.
+OFF_LANE_REQUIRED = [
+    r"\bexperience (?:in|with|using|building|developing|shipping)\b[^.]{0,40}?"
+    r"\b(swift|objective-c|kotlin|ruby on rails|rails|golang|rust|scala|c\+\+|c#|\.net|java)\b",
+    r"\b(swift|objective-c|kotlin|golang|scala)\b[^.]{0,20}?\b(experience|developer|engineer|required)\b",
+    r"\b(ios|android)\b[^.]{0,30}?\(\s*(swift|java|kotlin|objective-c)",
+    r"\bproficien\w* (?:in|with) [^.]{0,30}?\b(swift|objective-c|kotlin|golang|rust|scala|java|ruby|c#)\b",
+    r"\b(native|mobile) (?:ios|android|app) (?:development|engineering|developer)\b",
+]
+OFF_LANE_RES = [re.compile(p) for p in OFF_LANE_REQUIRED]
+SOFT_WORDS = re.compile(r"\b(plus|nice to have|nice-to-have|bonus|preferred|familiarity|exposure)\b")
+
+
+def off_lane_skill(d):
+    """The first required off-lane skill phrase, or None."""
+    for r in OFF_LANE_RES:
+        for m in r.finditer(d):
+            end = d.find(".", m.end())
+            window = d[max(0, m.start() - 40): (end if end != -1 else m.end() + 80)]
+            if not SOFT_WORDS.search(window):
+                return m.group(0)
+    return None
 LANG_RES = [re.compile(p) for p in LANGUAGE_WALLS]
 BODY_ANYWHERE_RE = re.compile(BODY_ANYWHERE)
 BARE_REMOTE_RE = re.compile(r"^[\s,|/()-]*(fully |100% )?remote[\s,|/()-]*$")
@@ -327,6 +351,9 @@ def check_description(desc):
         m = r.search(d)
         if m:
             return f"language: '{m.group(0)[:40]}'"
+    off = off_lane_skill(d)
+    if off:
+        return f"skills: requires '{off[:40]}'"
     return None
 
 
