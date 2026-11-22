@@ -172,11 +172,12 @@ WORK_AUTH_WALLS = [
     r"\bus[- ]only (role|position|candidates|applicants|residents)",
     r"\bw-?2\b",
     # "remote" but only inside one country, said in the job text
-    r"\b(?:worked|work|working|located|based|live|reside) (?:from |in )?(?:any ?where|any location|any state)"
-    r" (?:in|within|across) the (?:united states|u\.s\.|us|usa|uk|united kingdom|eu|european union)\b",
+    r"\b(?:worked|work|working|located|based|live|reside)(?: remotely)? (?:from |in )?(?:any ?where|any (?:registered )?location|any state)"
+    r" (?:in|within|across) the (?:united states|u\.s\.|us|usa|uk|united kingdom|eu|european union)(?![a-z])(?! (?:or|and) )",
     r"\blocation:? (?:united states|usa|u\.s\.|us)\b[ ,(-]*remote",
     r"\b(?:united states|usa|u\.s\.)[ ,(-]+remote\b",
     r"\bremote (?:within|in|across) the (?:united states|u\.s\.|us|usa)\b",
+    r"\bany(?:where| (?:registered )?location) in the (?:united states|u\.s\.|us|usa)(?![a-z])(?! (?:or|and) )",
     # pre-sales / quota-carrying roles (OTE pay = sales comp)
     r"\bote\b", r"on[- ]target earnings", r"\b(sales|revenue) quota", r"carry(ing)? a quota",
     r"security clearance",
