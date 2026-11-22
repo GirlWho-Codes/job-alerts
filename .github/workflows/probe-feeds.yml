@@ -4,21 +4,24 @@ jobs:
   probe:
     runs-on: ubuntu-latest
     steps:
-      - name: Probe candidate feeds
+      - run: pip install feedparser
+      - name: Show feed item structure
         run: |
-          for u in \
-            "https://remote.co/remote-jobs/feed/" \
-            "https://remote.co/feed/" \
-            "https://justremote.co/rss" \
-            "https://www.remotesource.com/feed" \
-            "https://nodesk.co/remote-jobs/index.xml" \
-            "https://euremotejobs.com/feed/?post_type=job_listing" \
-            "https://remotive.com/remote-jobs/feed/software-dev" \
-            "https://himalayas.app/jobs/rss" \
-            "https://www.remotesource.com/jobs.rss" \
-            "https://jobspresso.co/feed/?post_type=job_listing" \
-            "https://remoteafrica.io/api/jobs" ; do
-            code=$(curl -s -L -A "Mozilla/5.0 (job-alerts probe)" -o /tmp/b -w '%{http_code} %{content_type}' --max-time 20 "$u" || echo "curl-failed")
-            echo "=== $u -> $code"
-            head -c 300 /tmp/b | tr '\n' ' '; echo
-          done
+          python3 - <<'PY'
+          import feedparser
+          for u in ["https://community.n8n.io/c/jobs.rss",
+                    "https://nodesk.co/remote-jobs/index.xml",
+                    "https://jobspresso.co/feed/?post_type=job_listing"]:
+              d = feedparser.parse(u, agent="Mozilla/5.0 (job-alerts)")
+              print("=== FEED", u, "entries:", len(d.entries))
+              for e in d.entries[:3]:
+                  keys = sorted(k for k in e.keys())
+                  print("KEYS", keys)
+                  print("TITLE", e.get("title"))
+                  print("PUB", e.get("published"))
+                  for k in keys:
+                      if k not in ("title","summary","summary_detail","content","links","title_detail","published_parsed","updated_parsed"):
+                          print("  ", k, "=", str(e.get(k))[:120])
+                  print("SUMMARY", (e.get("summary") or "")[:300].replace("\n"," "))
+                  print("-")
+          PY
