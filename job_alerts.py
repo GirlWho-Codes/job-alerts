@@ -570,6 +570,66 @@ def from_hackernews():
     return out
 
 
+FEED_AGENT = "Mozilla/5.0 (job-alerts; +https://github.com/girlwho-codes/job-alerts)"
+
+
+def _entry_epoch(e):
+    p = e.get("published_parsed")
+    return calendar.timegm(p) if p else None
+
+
+def from_n8n_community():
+    """Jobs board on community.n8n.io. Every post is automation work, so titles are
+    tagged [n8n] to pass the skills check. Only [Hiring] posts; unpaid/commission skipped."""
+    out = []
+    try:
+        d = feedparser.parse("https://community.n8n.io/c/jobs.rss", agent=FEED_AGENT)
+        for e in d.entries:
+            title = (e.get("title") or "").strip()
+            low = title.lower()
+            if "hiring" not in low or re.search(r"\b(unpaid|commission|equity only)\b", low):
+                continue
+            m = re.search(r"remote[^)|\]]*", title, re.I)
+            loc = m.group(0).strip(" ,-") if m else "Remote"
+            out.append(norm("n8n-community", e.get("id") or e.get("link"),
+                            "[n8n] " + re.sub(r"^\[hiring\]\s*", "", title, flags=re.I),
+                            "", loc, e.get("link"), _entry_epoch(e), e.get("summary", "")))
+    except Exception as ex:
+        print("n8n community failed:", ex)
+    return out
+
+
+def from_nodesk():
+    out = []
+    try:
+        d = feedparser.parse("https://nodesk.co/remote-jobs/index.xml", agent=FEED_AGENT)
+        for e in d.entries:
+            title = (e.get("title") or "").strip()
+            role, _, company = title.rpartition(" at ")
+            out.append(norm("nodesk", e.get("id") or e.get("link"), role or title, company,
+                            "", e.get("link"), _entry_epoch(e), e.get("summary", "")))
+    except Exception as ex:
+        print("nodesk failed:", ex)
+    return out
+
+
+def from_jobspresso():
+    """WordPress job feed; the author field holds 'Company<br>⚲ Location'."""
+    out = []
+    try:
+        d = feedparser.parse("https://jobspresso.co/feed/?post_type=job_listing", agent=FEED_AGENT)
+        for e in d.entries:
+            parts = re.split(r"<br\s*/?>", html.unescape(e.get("author") or ""))
+            company = parts[0].strip()
+            loc = parts[1].replace("\u26b2", "").strip() if len(parts) > 1 else ""
+            body = (e.get("content") or [{}])[0].get("value") or e.get("summary", "")
+            out.append(norm("jobspresso", e.get("id") or e.get("link"), e.get("title"),
+                            company, loc, e.get("link"), _entry_epoch(e), body))
+    except Exception as ex:
+        print("jobspresso failed:", ex)
+    return out
+
+
 def _get_json(url):
     r = requests.get(url, headers=UA, timeout=BOARD_TIMEOUT)
     if r.status_code != 200:
@@ -697,6 +757,7 @@ def from_company_boards():
 
 SOURCES = [from_remotive, from_remoteok, from_himalayas, from_wwr,
            from_jobicy, from_workingnomads, from_hackernews,
+           from_n8n_community, from_nodesk, from_jobspresso,
            from_company_boards]
 
 
