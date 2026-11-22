@@ -7,23 +7,18 @@ jobs:
       - name: Probe candidate feeds
         run: |
           for u in \
-            "https://community.n8n.io/c/jobs.json" \
-            "https://community.n8n.io/c/jobs.rss" \
-            "https://community.n8n.io/categories.json" \
-            "https://remoteafrica.io/jobs/feed" \
-            "https://remoteafrica.io/feed" \
-            "https://remoteafrica.io/rss" \
-            "https://dynamitejobs.com/rss" \
-            "https://dynamitejobs.com/feed" \
             "https://remote.co/remote-jobs/feed/" \
             "https://remote.co/feed/" \
             "https://justremote.co/rss" \
-            "https://justremote.co/remote-jobs.rss" \
-            "https://www.workingnomads.com/jobsapi/_search" \
-            "https://wellfound.com/jobs" \
-            "https://www.storetasker.com/jobs" \
-            "https://arc.dev/remote-jobs" ; do
-            code=$(curl -s -L -A "Mozilla/5.0 (job-alerts probe)" -o /tmp/b -w '%{http_code} %{content_type}' --max-time 20 "$u")
+            "https://www.remotesource.com/feed" \
+            "https://nodesk.co/remote-jobs/index.xml" \
+            "https://euremotejobs.com/feed/?post_type=job_listing" \
+            "https://remotive.com/remote-jobs/feed/software-dev" \
+            "https://himalayas.app/jobs/rss" \
+            "https://www.remotesource.com/jobs.rss" \
+            "https://jobspresso.co/feed/?post_type=job_listing" \
+            "https://remoteafrica.io/api/jobs" ; do
+            code=$(curl -s -L -A "Mozilla/5.0 (job-alerts probe)" -o /tmp/b -w '%{http_code} %{content_type}' --max-time 20 "$u" || echo "curl-failed")
             echo "=== $u -> $code"
             head -c 300 /tmp/b | tr '\n' ' '; echo
           done
