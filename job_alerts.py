@@ -755,7 +755,7 @@ def from_company_boards():
     return out
 
 
-SOURCES = [from_remotive, from_remoteok, from_himalayas, from_wwr,
+SOURCES = [from_remotive, from_remoteok, from_himalayas,   # We Work Remotely removed (from_wwr kept, unused)
            from_jobicy, from_workingnomads, from_hackernews,
            from_n8n_community, from_nodesk, from_jobspresso,
            from_company_boards]

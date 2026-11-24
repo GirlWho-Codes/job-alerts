@@ -26,8 +26,7 @@ surfaces only the roles that are genuinely open to me, as fast as possible.
                                                   job text, recency)
 ```
 
-**Sources:** Remotive, RemoteOK, Himalayas, We Work Remotely (5 RSS
-categories), Jobicy, Working Nomads, and the monthly Hacker News
+**Sources:** Remotive, RemoteOK, Himalayas, Jobicy, Working Nomads, and the monthly Hacker News
 "Who is hiring?" thread.
 
 **Company job boards:** the public Greenhouse, Lever and Ashby boards of the
